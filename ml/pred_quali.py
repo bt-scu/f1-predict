@@ -7,52 +7,72 @@ import xgboost as xgb
 DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
 engine = create_engine(DB_URL)
 
-def predict_safe_mode():
+def predict_quali_outcomes():
     print("Fetching data (Safe Mode)...")
     
     # 2. FETCH DATA
     query = text("""
-        SELECT
-            r.race_id,
-            r.year,
-            r.round,
-            r.circuit_name,
-            q.driver_id,
-            q.position AS target_quali_pos,
-            res.constructor_id,
-            p.best_practice_time,
-            COALESCE(w.is_wet, 0) as is_wet,
-            w.track_temp,
-            w.air_temp
-        FROM qualifying AS q
-        INNER JOIN races AS r ON q.race_id = r.race_id
-        INNER JOIN results AS res ON q.race_id = res.race_id AND q.driver_id = res.driver_id
-        
-        -- WEATHER JOIN (STRICTLY RACE_ID + SESSION_TYPE)
-        LEFT JOIN (
-            SELECT 
-                race_id, 
-                MAX(CASE WHEN rainfall = TRUE THEN 1 ELSE 0 END) as is_wet,
-                AVG(track_temp) as track_temp,
-                AVG(air_temp) as air_temp
-            FROM weather
-            WHERE session_type = 'Qualifying'
-            GROUP BY race_id
-        ) AS w ON r.race_id = w.race_id
+      -- 1. FUNCTIONAL QUERY 1: Best Practice Time
+      -- "Go get me the single fastest lap a driver did all weekend"
+      WITH PracticeBest AS (
+          SELECT
+              race_id, driver_id,
+              MIN(lap_time) as best_practice_time
+          FROM practice_laps
+          GROUP BY race_id, driver_id
+      ), 
 
-        -- PRACTICE LAPS JOIN
-        LEFT JOIN (
-            SELECT
-                race_id, driver_id,
-                MIN(lap_time) as best_practice_time
-            FROM practice_laps
-            GROUP BY race_id, driver_id
-        ) AS p ON q.race_id = p.race_id AND q.driver_id = p.driver_id
-        
-        WHERE r.year >= 2023
-        ORDER BY r.year ASC, r.round ASC
-    """)
-    
+      -- 2. FUNCTIONAL QUERY 2: Weather
+      -- "Go get me the average temps for practice sessions"
+      WeatherPrep AS (
+          SELECT
+              race_id, 
+              AVG(track_temp) as track_temp,
+              AVG(air_temp) as air_temp
+          FROM weather
+          -- Check if your DB uses 'FP1' or 'Practice 1'
+          WHERE session_type LIKE 'FP%' OR session_type LIKE 'Practice%'
+          GROUP BY race_id
+      )
+
+      -- 3. THE MAIN SELECT
+      SELECT
+          -- Core IDs
+          r.race_id, r.year, r.round, r.circuit_name,
+          q.driver_id, 
+          res.constructor_id,
+          
+          -- Target Variable (Quali Position)
+          q.position AS target_quali_pos,
+          
+          -- Feature: Pace (from Function 1)
+          p.best_practice_time,
+          
+          -- Feature: Weather (from Function 2)
+          w.track_temp, w.air_temp
+
+      -- 4. JOINING IT ALL TOGETHER
+      FROM qualifying q
+      
+      -- Join standard info
+      INNER JOIN races r ON q.race_id = r.race_id
+      
+      -- Join Results (to get constructor info)
+      INNER JOIN results res 
+          ON q.race_id = res.race_id AND q.driver_id = res.driver_id
+      
+      -- Join Function 1 (Practice Pace)
+      LEFT JOIN PracticeBest p 
+          ON q.race_id = p.race_id AND q.driver_id = p.driver_id
+      
+      -- Join Function 2 (Weather)
+      LEFT JOIN WeatherPrep w 
+          ON q.race_id = w.race_id
+
+      WHERE r.year >= 2023
+      ORDER BY r.year ASC, r.round ASC
+  """)
+      
     try:
         df = pd.read_sql(query, engine)
         #print(df.head())
@@ -101,6 +121,7 @@ def predict_safe_mode():
     df['constructor_id'] = df['constructor_id'].astype('category')
     df['is_wet'] = df['is_wet'].astype('int')
     df['round_cat'] = df['round'].astype('category') 
+    df['driver_id'] = df['driver_id'].astype('category')
     
     print(df.head())
 
@@ -109,7 +130,6 @@ def predict_safe_mode():
         'season_avg_pos',     
         'constructor_id', 
         'round_cat',
-        'is_wet',
         'quali_lag_1',
         'quali_lag_2',
         'quali_lag_3',
@@ -119,8 +139,9 @@ def predict_safe_mode():
         'air_temp',
         'practice_rank', 
         'teammate_delta',
-        'constructor_recent_form', # <--- NEW
+        'constructor_recent_form',
         'driver_track_avg'
+        'driver_id'
     ]
 
 
@@ -163,7 +184,7 @@ def predict_safe_mode():
       race_preds['predicted_score'] = preds
       race_preds['predicted_pos'] = race_preds['predicted_score'].rank(method='first').astype(int) # cool python method to sort the float outputs into integers
       
-      store_predictions.append(race_preds[['year', 'round', 'driver_id', 'target_quali_pos', 'predicted_pos', 'is_wet']])
+      store_predictions.append(race_preds[['race_id','year', 'round', 'driver_id', 'target_quali_pos', 'predicted_pos']])
       print(f"Round {r} Prediction Complete.")
 
 
@@ -185,10 +206,8 @@ def predict_safe_mode():
         grouped = final_results.groupby(['round'], sort=True)
 
         for round_num, race_df in grouped:
-            race_is_wet = race_df['is_wet'].max() == 1
-            weather_icon = "🌧️" if race_is_wet else "☀️"
             
-            print(f"\n📍 ROUND {round_num} {weather_icon}")
+            print(f"\n📍 ROUND {round_num}")
             print(f"{'P':<4} {'Driver':<8} {'Pred':<6} {'Actual':<6} {'Diff'}")
             print("-" * 45)
             
@@ -232,6 +251,20 @@ def predict_safe_mode():
             print(f"✅ Exact Matches : {exact_matches}/{total} ({exact_matches/total:.1%})")
             print(f"🎯 Close Calls   : {close_calls}/{total} ({close_calls/total:.1%}) (within +/- 2)")
             print("="*60)
+  
+    if store_predictions:
+      final_results = pd.concat(store_predictions)
+      db_df = final_results[['race_id', 'driver_id', 'predicted_pos']].copy()
+      data_to_upload = db_df.to_dict(orient='records')
+      with engine.begin() as conn:  
+        query = text("""
+            UPDATE simulate_predictions
+            SET pred_quali_pos = :predicted_pos
+                WHERE race_id = :race_id AND driver_id = :driver_id
+            """)
+        for row in data_to_upload:
+          conn.execute(query, row)
+    
 
 if __name__ == "__main__":
-    predict_safe_mode()
+    predict_quali_outcomes()
