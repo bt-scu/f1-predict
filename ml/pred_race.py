@@ -10,7 +10,7 @@ engine = create_engine(DB_URL)
 def predict_race_outcomes():
     print("Fetching data (Safe Mode)...")
     
-    #Fetch Data from DB
+    # Fetch Data from DB
     query = text("""
       WITH PracticePrep AS (
         SELECT
@@ -61,13 +61,13 @@ def predict_race_outcomes():
         print(f"❌ Database Error: {e}")
         return
 
-    #==================FEATURE ENGINEERING===============
+    # ==================FEATURE ENGINEERING===============
     print("Engineering Features...")
     
     # 1. PRACTICE LAPS
     df['best_laps'] = df['best_laps'].apply(lambda x: x if isinstance(x, list) else [])
-    laps_expanded = pd.DataFrame(df['best_laps'].to_list(), index = df.index)
-    laps_expanded = laps_expanded.iloc[:,:7] 
+    laps_expanded = pd.DataFrame(df['best_laps'].to_list(), index=df.index)
+    laps_expanded = laps_expanded.iloc[:, :7] 
     laps_expanded.columns = [f"best_lap_{i+1}" for i in range(laps_expanded.shape[1])]
     df = pd.concat([df, laps_expanded], axis=1)
     
@@ -77,19 +77,19 @@ def predict_race_outcomes():
     
     session_best = df.groupby('race_id')['best_lap_1'].transform('min')
     for i in range(1, 8):
-      col_name = f"best_lap_{i}"
-      if col_name in df.columns:
-          df[col_name] = df[col_name] - session_best
+        col_name = f"best_lap_{i}"
+        if col_name in df.columns:
+            df[col_name] = df[col_name] - session_best
    
     # 2. TEAM MOMENTUM
     team_stats = df.groupby(['race_id', 'constructor_id', 'year', 'round'])['finish_pos'].mean().reset_index()
     team_stats = team_stats.sort_values(by=['year', 'round'])
     team_stats.rename(columns={'finish_pos': 'team_score_current'}, inplace=True)
    
-    for i in range(1,3):
-      col_name = f'constructor_prev_{i}'
-      team_stats[col_name] = team_stats.groupby('constructor_id')['team_score_current'].shift(i)
-      team_stats[col_name] = team_stats[col_name].fillna(10.0)
+    for i in range(1, 3):
+        col_name = f'constructor_prev_{i}'
+        team_stats[col_name] = team_stats.groupby('constructor_id')['team_score_current'].shift(i)
+        team_stats[col_name] = team_stats[col_name].fillna(10.0)
     
     cols_to_merge = ['race_id', 'constructor_id', 'constructor_prev_1', 'constructor_prev_2']
     df = df.merge(team_stats[cols_to_merge], on=['race_id', 'constructor_id'], how='left')
@@ -128,16 +128,16 @@ def predict_race_outcomes():
         return
     
     cols_to_merge = ['race_id', 'driver_id'] 
-    for i in range(1,4):
-      col_name = f'stdev_lag_{i}'
-      laps_df[col_name] = laps_df.groupby('driver_id')['stdev_laps'].shift(i)
-      laps_df[col_name] = laps_df[col_name].fillna(5.0) 
-      cols_to_merge.append(col_name)
+    for i in range(1, 4):
+        col_name = f'stdev_lag_{i}'
+        laps_df[col_name] = laps_df.groupby('driver_id')['stdev_laps'].shift(i)
+        laps_df[col_name] = laps_df[col_name].fillna(5.0) 
+        cols_to_merge.append(col_name)
 
     df = df.merge(laps_df[cols_to_merge], on=['race_id', 'driver_id'], how='left')
     
-    for i in range(1,4):
-         df[f'stdev_lag_{i}'] = df[f'stdev_lag_{i}'].fillna(5.0)
+    for i in range(1, 4):
+        df[f'stdev_lag_{i}'] = df[f'stdev_lag_{i}'].fillna(5.0)
   
     # 5. OVERTAKES
     query_overtakes = text("""
@@ -147,10 +147,10 @@ def predict_race_outcomes():
     """)
     query_df = pd.read_sql(query_overtakes, engine)
     
-    for i in range(1,4):
-      col_name = f'prev_overtakes_{i}'
-      query_df[col_name] = query_df.groupby('driver_id')['overtakes'].shift(i)
-      query_df[col_name] = query_df[col_name].fillna(0)
+    for i in range(1, 4):
+        col_name = f'prev_overtakes_{i}'
+        query_df[col_name] = query_df.groupby('driver_id')['overtakes'].shift(i)
+        query_df[col_name] = query_df[col_name].fillna(0)
       
     df = df.merge(query_df, on=['race_id', 'driver_id'], how="left")
     df['total_overtakes'] = df['total_overtakes'].fillna(0)
@@ -158,10 +158,10 @@ def predict_race_outcomes():
     
     # 6. DRIVER MOMENTUM
     df = df.sort_values(by=['year', 'round'])
-    for i in range(1,4):
-      col_name = f'prev_finish_{i}'
-      df[col_name] = df.groupby('driver_id')['finish_pos'].shift(i)
-      df[col_name] = df[col_name].fillna(10)
+    for i in range(1, 4):
+        col_name = f'prev_finish_{i}'
+        df[col_name] = df.groupby('driver_id')['finish_pos'].shift(i)
+        df[col_name] = df[col_name].fillna(10)
       
     feature_cols = [
         'best_lap_1', 'best_lap_2', 'best_lap_3', 'best_lap_4', 
@@ -178,7 +178,7 @@ def predict_race_outcomes():
         'circuit_name'       
     ]
 
-    #==================PREDICTIVE MODEL===============
+    # ==================PREDICTIVE MODEL===============
     
     # FIX: Convert object columns to category
     df['constructor_id'] = df['constructor_id'].astype('category')
@@ -188,41 +188,41 @@ def predict_race_outcomes():
     store_predictions = []
 
     for r in sorted(df[df['year'] == 2025]['round'].unique()):
-      train_mask = (
-          ((df['year'] < 2025) | ((df['year'] == 2025) & (df['round'] < r))) & 
-          ( df['finish_pos'].notna())
-      )
+        train_mask = (
+            ((df['year'] < 2025) | ((df['year'] == 2025) & (df['round'] < r))) & 
+            (df['finish_pos'].notna())
+        )
 
-      test_mask = (df['year'] == 2025) & (df['round'] == r)
+        test_mask = (df['year'] == 2025) & (df['round'] == r)
           
-      X_train = df.loc[train_mask, feature_cols]
-      Y_train = df.loc[train_mask, 'finish_pos']
-      X_test = df.loc[test_mask, feature_cols]
+        X_train = df.loc[train_mask, feature_cols]
+        Y_train = df.loc[train_mask, 'finish_pos']
+        X_test = df.loc[test_mask, feature_cols]
       
-      model = xgb.XGBRegressor(
-        tree_method='hist',        # Required for categorical data
-        enable_categorical=True,   # Required for categorical data
-        n_estimators=1000,
-        learning_rate=0.01,
-        max_depth=4
-      )
-      
-      model.fit(
-          X_train, Y_train,
-          eval_set=[(X_train, Y_train)],
-          verbose=False
+        model = xgb.XGBRegressor(
+            tree_method='hist',        # Required for categorical data
+            enable_categorical=True,   # Required for categorical data
+            n_estimators=1000,
+            learning_rate=0.01,
+            max_depth=4
         )
       
-      preds = model.predict(X_test)
+        model.fit(
+            X_train, Y_train,
+            eval_set=[(X_train, Y_train)],
+            verbose=False
+        )
       
-      race_preds = df.loc[test_mask].copy()
-      race_preds['predicted_score'] = preds
-      race_preds['predicted_pos'] = race_preds['predicted_score'].rank(method='first').astype(int) 
+        preds = model.predict(X_test)
       
-      store_predictions.append(race_preds[['race_id','year', 'round', 'driver_id', 'grid', 'predicted_pos', 'finish_pos']])
-      print(f"✅ Round {r} Prediction Complete.")
+        race_preds = df.loc[test_mask].copy()
+        race_preds['predicted_score'] = preds
+        race_preds['predicted_pos'] = race_preds['predicted_score'].rank(method='first').astype(int) 
+      
+        store_predictions.append(race_preds[['race_id','year', 'round', 'driver_id', 'grid', 'predicted_pos', 'finish_pos']])
+        print(f"✅ Round {r} Prediction Complete.")
 
-    #==================RESULTS & ANALYTICS===============
+    # ==================RESULTS & ANALYTICS===============
     if store_predictions:
         final_results = pd.concat(store_predictions)
         
@@ -308,6 +308,71 @@ def predict_race_outcomes():
         print("⚠️ No predictions were generated.")
 
 
+def predict_overtakes():
+    query = text("""
+    WITH PracticeStats AS (
+        SELECT 
+            race_id, 
+            driver_id, 
+            AVG(lap_time) as avg_fp2_lap_time,
+            MIN(lap_time) as best_fp2_lap_time
+        FROM practice_laps 
+        WHERE session_type = 'FP2' 
+        GROUP BY race_id, driver_id
+    ),
+    OvertakesTarget AS (
+        SELECT race_id, driver_id, overtakes 
+        FROM driver_fantasy_results
+    ),
+    WeatherPrep AS (
+        SELECT 
+            race_id, 
+            AVG(track_temp) as avg_track_temp
+        FROM weather 
+        WHERE session_type LIKE 'FP%' 
+        GROUP BY race_id
+    ),
+    TrackStats AS (
+        SELECT race_id, SUM(overtakes) as total_race_overtakes
+        FROM driver_fantasy_results 
+        GROUP BY race_id
+    ),
+    GridInfo AS (
+        SELECT 
+            COALESCE(sp.race_id, r.race_id) as race_id,
+            COALESCE(sp.driver_id, r.driver_id) as driver_id,
+            COALESCE(sp.pred_quali_pos, r.grid_position) as start_grid,
+            r.finish_position as finish_pos -- Note: check if your table is finish_pos or finish_position
+        FROM results r
+        FULL OUTER JOIN simulate_predictions sp 
+            ON r.race_id = sp.race_id AND r.driver_id = sp.driver_id
+    )
+    SELECT 
+        p.driver_id,
+        p.race_id,
+        ot.overtakes as actual_overtakes,
+        gi.start_grid,
+        gi.finish_pos,
+        p.avg_fp2_lap_time,
+        p.best_fp2_lap_time,
+        wp.avg_track_temp,
+        ts.total_race_overtakes as track_difficulty_index
+    FROM PracticeStats p
+    JOIN GridInfo gi ON p.race_id = gi.race_id AND p.driver_id = gi.driver_id
+    LEFT JOIN OvertakesTarget ot ON p.driver_id = ot.driver_id AND p.race_id = ot.race_id
+    LEFT JOIN WeatherPrep wp ON p.race_id = wp.race_id
+    LEFT JOIN TrackStats ts ON p.race_id = ts.race_id
+""")
+    
+    try:
+        print("🚀 Script started...")
+        df = pd.read_sql(query, engine)
+        print(df.head())
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+
 
 if __name__ == "__main__":
-  predict_race_outcomes()
+    # predict_race_outcomes()
+    predict_overtakes()
