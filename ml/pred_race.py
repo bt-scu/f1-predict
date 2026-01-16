@@ -311,7 +311,7 @@ def predict_race_outcomes():
         print("⚠️ No predictions were generated.")
 
 
-def predict_overtakes():
+def predict_race_overtakes():
     query = text("""
     WITH PracticeStats AS (
         SELECT 
@@ -345,15 +345,27 @@ def predict_overtakes():
             race.year,
             race.round,
             race.circuit_name,
+            
+            -- Must COALESCE keys so 2026 rows (which have no 'r' data) get IDs
+            COALESCE(r.race_id, sp.race_id) as race_id,
+            COALESCE(r.driver_id, sp.driver_id) as driver_id,
             COALESCE(r.constructor_id, sp.constructor_id) as constructor_id,
-            COALESCE(sp.race_id, r.race_id) as race_id,
-            COALESCE(sp.driver_id, r.driver_id) as driver_id,
-            COALESCE(sp.pred_quali_pos, r.grid_position) as start_grid,
+            CASE 
+                WHEN race.year > 2025 THEN sp.pred_quali_pos
+                ELSE r.grid_position 
+            END as start_grid,
+
+            r.status,
             r.finish_position as finish_pos
+
         FROM results r
         FULL OUTER JOIN simulate_predictions sp 
             ON r.race_id = sp.race_id AND r.driver_id = sp.driver_id
-        INNER JOIN races race ON COALESCE(r.race_id, sp.race_id) = race.race_id
+            
+        INNER JOIN races race 
+            ON COALESCE(r.race_id, sp.race_id) = race.race_id
+            
+        WHERE race.year >= 2023
     )
     SELECT
         gi.year,
@@ -384,19 +396,12 @@ def predict_overtakes():
         print(f"❌ Error: {e}")
 
     # FEATURE ENGINEERING
-    # 1. ROBUST PACE GAP (The Fix)
-    # Calculate the average pace for the TEAM for that specific race
     team_pace_stats = df.groupby(['race_id', 'constructor_id'])['avg_fp2_lap_time'].mean().reset_index()
     team_pace_stats.rename(columns={'avg_fp2_lap_time': 'team_avg_pace'}, inplace=True)
-    
-    # Merge back to the main dataframe
     df_merged = df.merge(team_pace_stats, on=['race_id', 'constructor_id'], how='left')
     
-    # Calculate gap: (My Pace) - (Team Average)
-    # If I am faster than average, this will be negative (Good). Slower = positive.
     df_merged['practice_pace_gap'] = df_merged['avg_fp2_lap_time'] - df_merged['team_avg_pace']
     
-    # Fill any remaining NaNs (e.g. if the whole team has no times) with 0
     df_merged['practice_pace_gap'] = df_merged['practice_pace_gap'].fillna(0)
 
     # 2. Rolling Features
@@ -410,13 +415,11 @@ def predict_overtakes():
         df_merged[col_name] = df_merged.groupby(['driver_id'])['overtakes'].shift(i)
         
         # Calculate Aggression Score
-        # Add safety to denominator to prevent DivisionByZero
         denom = (df_merged['start_grid'] - df_merged['finish_pos'] + 1)
-        denom = denom.replace(0, 1) # Safety check
+        denom = denom.replace(0, 1)
         
         df_merged[col_name_2] = df_merged[col_name] / denom
         
-        # Clean up
         df_merged[col_name] = df_merged[col_name].fillna(0.0)
         df_merged[col_name_2] = df_merged[col_name_2].fillna(0.0)
         df_merged[col_name_2] = df_merged[col_name_2].replace([np.inf, -np.inf], 0.0)
@@ -486,21 +489,17 @@ def predict_overtakes():
     
     final_results = pd.concat(store_predictions)
 
-    # 1. Re-attach 'actual_overtakes' from the main df so we can check accuracy
-    #    (We assume 'df' still has the original data)
     final_results = final_results.merge(
         df[['race_id', 'driver_id', 'overtakes']], 
         on=['race_id', 'driver_id'], 
         how='left'
     )
-    
-    # Rename for clarity
+
     final_results = final_results.rename(columns={'overtakes': 'actual_overtakes'})
     
     valid_preds = final_results.dropna(subset=['actual_overtakes'])
     
     if not valid_preds.empty:
-        # Calculate the error (absolute difference)
         valid_preds['abs_diff'] = abs(valid_preds['predicted_overtakes'] - valid_preds['actual_overtakes'])
         
         mae_overall = valid_preds['abs_diff'].mean()
@@ -508,10 +507,7 @@ def predict_overtakes():
         close_calls = len(valid_preds[valid_preds['abs_diff'] <= 2]) # Within 2 overtakes is solid
         total = len(valid_preds)
         
-        # Segmented Performance: How good are we at predicting "Boring" vs "Exciting" races?
-        # Low Action (Predicted <= 2 overtakes)
         low_action_mae = valid_preds[valid_preds['predicted_overtakes'] <= 2]['abs_diff'].mean()
-        # High Action (Predicted >= 5 overtakes)
         high_action_mae = valid_preds[valid_preds['predicted_overtakes'] >= 5]['abs_diff'].mean()
         
         print("\n" + "="*60)
@@ -526,10 +522,8 @@ def predict_overtakes():
         print(f"🎯 Close Calls   : {close_calls}/{total} ({close_calls/total:.1%}) (within +/- 2)")
         print("="*60)
 
-    # 2. Database Upload (Targeting 'pred_race_overtakes')
     print("\nUploading to Database...")
     
-    # Prepare the data for upload
     db_df = final_results[['race_id', 'driver_id', 'predicted_overtakes']].copy()
     data_to_upload = db_df.to_dict(orient='records')
     
@@ -540,8 +534,7 @@ def predict_overtakes():
                 SET pred_race_overtakes = :predicted_overtakes
                 WHERE race_id = :race_id AND driver_id = :driver_id
             """)
-            
-            # Execute in bulk is faster, but loop works fine for small datasets
+        
             for row in data_to_upload:
                 conn.execute(query, row)
                 
@@ -549,13 +542,107 @@ def predict_overtakes():
         
     except Exception as e:
         print(f"❌ Upload Failed: {e}")
+
+def predict_race_dnfs():
+    query = text("""
+    WITH 
+    -- 1. Get Target Data (Overtakes)
+    OvertakesTarget AS (
+        SELECT race_id, driver_id, overtakes 
+        FROM driver_fantasy_results
+    ),
+    -- 2. Get Features (Grid, Status, etc.)
+    GridInfo AS (
+        SELECT 
+            race.year,
+            race.round,
+            race.circuit_name,
+            race.race_id,
+            COALESCE(r.driver_id, sp.driver_id) as driver_id,
+            COALESCE(r.constructor_id, sp.constructor_id) as constructor_id,
+            
+            -- GRID LOGIC: Use Prediction if Future, Real Grid if Past
+            CASE 
+                WHEN race.year > 2025 THEN sp.pred_quali_pos
+                ELSE r.grid_position 
+            END as start_grid,
+
+            -- CRITICAL: We need this column for your Python 'is_dnf' logic!
+            r.status 
+
+        FROM races race
+        LEFT JOIN results r ON race.race_id = r.race_id
+        LEFT JOIN simulate_predictions sp 
+            ON race.race_id = sp.race_id 
+            AND (r.driver_id IS NULL OR r.driver_id = sp.driver_id)
+        WHERE race.year >= 2021
+    )
+
+    -- 3. Select Final Columns
+    SELECT 
+        g.race_id,
+        g.year,
+        g.round,
+        g.driver_id,
+        g.start_grid,
+        g.status,  -- <--- THIS WAS MISSING
+        COALESCE(ot.overtakes, 0) as overtakes
+        
+    FROM GridInfo g
+    LEFT JOIN OvertakesTarget ot 
+           ON g.race_id = ot.race_id 
+          AND g.driver_id = ot.driver_id
+    WHERE g.driver_id IS NOT NULL
+    ORDER BY g.year, g.round
+    """)
+
     
+    try:
+        print("🚀 Script started...")
+        df = pd.read_sql(query, engine)
+        print(df.head())
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+    #Feature Engineering
+    keywords = ["Retire", "Withdraw", "Accident", "Collision", "Damage", "Spun"]
+    pattern = '|'.join(keywords)
+    df['is_dnf'] = df['status'].str.contains(pattern, case=False, na=False).astype(int)
     
+    df = df.sort_values(by=['year', 'round'])
     
+    for i in range(1, 11):
+        col_name = f"dnf_{i}_races_ago"
+        df[col_name] = df.groupby('driver_id')['is_dnf'].shift(i)
+        df[col_name] = df[col_name].fillna(0.0)
     
+    for i in range(1, 4):
+        col_name = f"rolling_overtakes_{i}"
+        df[col_name] = df.groupby('driver_id')['overtakes'].shift(i)
+        df[col_name] = df[col_name].fillna(0.0)
+    
+    features = [
+        'start_grid',
+        'dnf_1_races_ago',
+        'dnf_2_races_ago',
+        'dnf_3_races_ago',
+        'dnf_4_races_ago',
+        'dnf_5_races_ago',
+        'dnf_6_races_ago',
+        'dnf_7_races_ago',
+        'dnf_8_races_ago',
+        'dnf_9_races_ago',
+        'dnf_10_races_ago',
+        'rolling_overtakes_1',
+        'rolling_overtakes_2',
+        'rolling_overtakes_3'
+    ]
+    
+        
     
 
 
 if __name__ == "__main__":
     # predict_race_outcomes()
-    predict_overtakes()
+    predict_race_overtakes()
+    #predict_race_dnfs()
