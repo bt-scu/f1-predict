@@ -64,6 +64,10 @@ def predict_race_outcomes():
     # ==================FEATURE ENGINEERING===============
     print("Engineering Features...")
     
+    field_avg_pace = df['avg_fp2_lap_time'].mean()
+    df['avg_fp2_lap_time'] = df['avg_fp2_lap_time'].fillna(field_avg_pace)
+    df['best_fp2_lap_time'] = df['best_fp2_lap_time'].fillna(df['best_fp2_lap_time'].mean())
+    
     # 1. PRACTICE LAPS
     df['best_laps'] = df['best_laps'].apply(lambda x: x if isinstance(x, list) else [])
     laps_expanded = pd.DataFrame(df['best_laps'].to_list(), index=df.index)
@@ -180,7 +184,6 @@ def predict_race_outcomes():
 
     # ==================PREDICTIVE MODEL===============
     
-    # FIX: Convert object columns to category
     df['constructor_id'] = df['constructor_id'].astype('category')
     df['driver_id'] = df['driver_id'].astype('category')
     df['circuit_name'] = df['circuit_name'].astype('category')
@@ -200,8 +203,8 @@ def predict_race_outcomes():
         X_test = df.loc[test_mask, feature_cols]
       
         model = xgb.XGBRegressor(
-            tree_method='hist',        # Required for categorical data
-            enable_categorical=True,   # Required for categorical data
+            tree_method='hist',        
+            enable_categorical=True,  
             n_estimators=1000,
             learning_rate=0.01,
             max_depth=4
@@ -317,7 +320,7 @@ def predict_overtakes():
             AVG(lap_time) as avg_fp2_lap_time,
             MIN(lap_time) as best_fp2_lap_time
         FROM practice_laps 
-        WHERE session_type = 'FP2' 
+        WHERE session_type in ('FP1', 'FP2')
         GROUP BY race_id, driver_id
     ),
     OvertakesTarget AS (
@@ -339,24 +342,33 @@ def predict_overtakes():
     ),
     GridInfo AS (
         SELECT 
+            race.year,
+            race.round,
+            race.circuit_name,
+            COALESCE(r.constructor_id, sp.constructor_id) as constructor_id,
             COALESCE(sp.race_id, r.race_id) as race_id,
             COALESCE(sp.driver_id, r.driver_id) as driver_id,
             COALESCE(sp.pred_quali_pos, r.grid_position) as start_grid,
-            r.finish_position as finish_pos -- Note: check if your table is finish_pos or finish_position
+            r.finish_position as finish_pos
         FROM results r
         FULL OUTER JOIN simulate_predictions sp 
             ON r.race_id = sp.race_id AND r.driver_id = sp.driver_id
+        INNER JOIN races race ON COALESCE(r.race_id, sp.race_id) = race.race_id
     )
-    SELECT 
+    SELECT
+        gi.year,
+        gi.round,
         p.driver_id,
         p.race_id,
-        ot.overtakes as actual_overtakes,
+        ot.overtakes,
         gi.start_grid,
         gi.finish_pos,
+        gi.constructor_id,
+        gi.circuit_name,
         p.avg_fp2_lap_time,
         p.best_fp2_lap_time,
         wp.avg_track_temp,
-        ts.total_race_overtakes as track_difficulty_index
+        ts.total_race_overtakes
     FROM PracticeStats p
     JOIN GridInfo gi ON p.race_id = gi.race_id AND p.driver_id = gi.driver_id
     LEFT JOIN OvertakesTarget ot ON p.driver_id = ot.driver_id AND p.race_id = ot.race_id
@@ -370,6 +382,177 @@ def predict_overtakes():
         print(df.head())
     except Exception as e:
         print(f"❌ Error: {e}")
+
+    # FEATURE ENGINEERING
+    # 1. ROBUST PACE GAP (The Fix)
+    # Calculate the average pace for the TEAM for that specific race
+    team_pace_stats = df.groupby(['race_id', 'constructor_id'])['avg_fp2_lap_time'].mean().reset_index()
+    team_pace_stats.rename(columns={'avg_fp2_lap_time': 'team_avg_pace'}, inplace=True)
+    
+    # Merge back to the main dataframe
+    df_merged = df.merge(team_pace_stats, on=['race_id', 'constructor_id'], how='left')
+    
+    # Calculate gap: (My Pace) - (Team Average)
+    # If I am faster than average, this will be negative (Good). Slower = positive.
+    df_merged['practice_pace_gap'] = df_merged['avg_fp2_lap_time'] - df_merged['team_avg_pace']
+    
+    # Fill any remaining NaNs (e.g. if the whole team has no times) with 0
+    df_merged['practice_pace_gap'] = df_merged['practice_pace_gap'].fillna(0)
+
+    # 2. Rolling Features
+    df_merged = df_merged.sort_values(by=['year', 'round'])
+    
+    for i in range(1, 4):
+        col_name = f"rolling_overtakes_{i}"
+        col_name_2 = f"aggresion_score_{i}"
+        
+        # Shift within driver history
+        df_merged[col_name] = df_merged.groupby(['driver_id'])['overtakes'].shift(i)
+        
+        # Calculate Aggression Score
+        # Add safety to denominator to prevent DivisionByZero
+        denom = (df_merged['start_grid'] - df_merged['finish_pos'] + 1)
+        denom = denom.replace(0, 1) # Safety check
+        
+        df_merged[col_name_2] = df_merged[col_name] / denom
+        
+        # Clean up
+        df_merged[col_name] = df_merged[col_name].fillna(0.0)
+        df_merged[col_name_2] = df_merged[col_name_2].fillna(0.0)
+        df_merged[col_name_2] = df_merged[col_name_2].replace([np.inf, -np.inf], 0.0)
+      
+    # 3. Track Baseline
+    track_baseline = df_merged.groupby('circuit_name')['total_race_overtakes'].mean().reset_index()
+    track_baseline.columns = ['circuit_name', 'avg_circuit_overtakes']
+    df_merged = df_merged.merge(track_baseline, on='circuit_name', how='left')
+    
+    # Fill missing track data for new/renamed tracks
+    global_avg = df_merged['total_race_overtakes'].mean()
+    df_merged['avg_circuit_overtakes'] = df_merged['avg_circuit_overtakes'].fillna(global_avg)
+    
+    
+    feature_cols = [
+        'rolling_overtakes_1', 'rolling_overtakes_2', 'rolling_overtakes_3',
+        'aggresion_score_1', 'aggresion_score_2', 'aggresion_score_3',
+        'practice_pace_gap',
+        'avg_fp2_lap_time',
+        'best_fp2_lap_time',
+        'avg_track_temp', 
+        'start_grid',
+        'constructor_id',
+        'driver_id',
+        'avg_circuit_overtakes',
+                
+    ]
+
+# ==================PREDICTIVE MODEL===============
+    df_merged['constructor_id'] = df_merged['constructor_id'].astype('category')
+    df_merged['driver_id'] = df_merged['driver_id'].astype('category')
+    df_merged['circuit_name'] = df_merged['circuit_name'].astype('category')
+    
+    store_predictions = []
+    
+    for r in sorted(df_merged[df_merged['year'] == 2025]['round'].unique()):
+        train_mask = (
+            ((df_merged['year'] < 2025) | ((df_merged['year'] == 2025) & (df_merged['round'] < r))) & 
+            (df_merged['overtakes'].notna())
+        )
+        
+        test_mask = (df_merged['year'] == 2025) & (df_merged['round'] == r)
+        
+        X_train = df_merged.loc[train_mask, feature_cols]
+        Y_train = df_merged.loc[train_mask, 'overtakes']
+        X_test = df_merged.loc[test_mask, feature_cols]
+      
+        model = xgb.XGBRegressor(
+            objective='count:poisson', #good for count data such as # of occurence        
+            enable_categorical=True,  
+            n_estimators=1000,
+            learning_rate=0.01,
+            max_depth=4
+        )
+      
+        model.fit(
+            X_train, Y_train,
+            eval_set=[(X_train, Y_train)],
+            verbose=False
+        )
+      
+        preds = model.predict(X_test)
+      
+        overtakes_preds = df_merged.loc[test_mask].copy()
+        overtakes_preds['predicted_overtakes'] = np.round(np.maximum(preds, 0)).astype(int)
+        store_predictions.append(overtakes_preds[['race_id', 'year', 'round', 'driver_id', 'predicted_overtakes']])
+    
+    final_results = pd.concat(store_predictions)
+
+    # 1. Re-attach 'actual_overtakes' from the main df so we can check accuracy
+    #    (We assume 'df' still has the original data)
+    final_results = final_results.merge(
+        df[['race_id', 'driver_id', 'overtakes']], 
+        on=['race_id', 'driver_id'], 
+        how='left'
+    )
+    
+    # Rename for clarity
+    final_results = final_results.rename(columns={'overtakes': 'actual_overtakes'})
+    
+    valid_preds = final_results.dropna(subset=['actual_overtakes'])
+    
+    if not valid_preds.empty:
+        # Calculate the error (absolute difference)
+        valid_preds['abs_diff'] = abs(valid_preds['predicted_overtakes'] - valid_preds['actual_overtakes'])
+        
+        mae_overall = valid_preds['abs_diff'].mean()
+        exact_matches = len(valid_preds[valid_preds['abs_diff'] == 0])
+        close_calls = len(valid_preds[valid_preds['abs_diff'] <= 2]) # Within 2 overtakes is solid
+        total = len(valid_preds)
+        
+        # Segmented Performance: How good are we at predicting "Boring" vs "Exciting" races?
+        # Low Action (Predicted <= 2 overtakes)
+        low_action_mae = valid_preds[valid_preds['predicted_overtakes'] <= 2]['abs_diff'].mean()
+        # High Action (Predicted >= 5 overtakes)
+        high_action_mae = valid_preds[valid_preds['predicted_overtakes'] >= 5]['abs_diff'].mean()
+        
+        print("\n" + "="*60)
+        print("📊 OVERTAKE MODEL PERFORMANCE SUMMARY")
+        print("="*60)
+        print(f"Global MAE       : {mae_overall:.2f} overtakes off on average")
+        print("-" * 60)
+        print(f"Low Action MAE   : {low_action_mae:.2f} (When predicting <= 2 moves)")
+        print(f"High Action MAE  : {high_action_mae:.2f} (When predicting >= 5 moves)")
+        print("-" * 60)
+        print(f"✅ Exact Matches : {exact_matches}/{total} ({exact_matches/total:.1%})")
+        print(f"🎯 Close Calls   : {close_calls}/{total} ({close_calls/total:.1%}) (within +/- 2)")
+        print("="*60)
+
+    # 2. Database Upload (Targeting 'pred_race_overtakes')
+    print("\nUploading to Database...")
+    
+    # Prepare the data for upload
+    db_df = final_results[['race_id', 'driver_id', 'predicted_overtakes']].copy()
+    data_to_upload = db_df.to_dict(orient='records')
+    
+    try:
+        with engine.begin() as conn:  
+            query = text("""
+                UPDATE simulate_predictions
+                SET pred_race_overtakes = :predicted_overtakes
+                WHERE race_id = :race_id AND driver_id = :driver_id
+            """)
+            
+            # Execute in bulk is faster, but loop works fine for small datasets
+            for row in data_to_upload:
+                conn.execute(query, row)
+                
+        print(f"✅ Upload Success! {len(data_to_upload)} predictions stored in 'pred_race_overtakes'.")
+        
+    except Exception as e:
+        print(f"❌ Upload Failed: {e}")
+    
+    
+    
+    
     
 
 
