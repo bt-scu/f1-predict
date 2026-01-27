@@ -7,7 +7,7 @@ import xgboost as xgb
 DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
 engine = create_engine(DB_URL)
 
-def predict_race_outcomes():
+def predict_sprint_outcomes():
     print("Fetching data (Safe Mode)...")
     
     # Fetch Data from DB
@@ -28,27 +28,38 @@ def predict_race_outcomes():
         FROM weather
         WHERE session_type LIKE 'FP%'
         GROUP BY race_id
+      ),
+      MainResults AS (
+        SELECT race_id, driver_id, constructor_id, grid_position, finish_position as finish_pos, 'main' as race_type
+        FROM results
+      ),
+      SprintResults AS (
+        SELECT race_id, driver_id, constructor_id, grid_position, finish_position as finish_pos, 'sprint' as race_type
+        FROM sprint_results
+      ),
+      Combined AS (
+        SELECT * FROM MainResults UNION ALL SELECT * FROM SprintResults
       )
-      
       SELECT 
-        r.race_id, r.year, r.round, r.circuit_name,
-        res.driver_id, res.constructor_id, res.finish_position as finish_pos, (res.grid_position - res.finish_position) AS net_pos_gained,
+        r.race_id, r.year, r.round, r.circuit_name, c.race_type,
+        c.driver_id, c.constructor_id, c.finish_pos, (c.grid_position - c.finish_pos) AS net_pos_gained,
         
-        COALESCE(pred.pred_quali_pos, res.grid_position) as grid,
+        COALESCE(pred.pred_quali_pos, c.grid_position) as grid,
         p.best_laps, 
         
         w.track_temp, w.air_temp
       
-      FROM results res
-      INNER JOIN races r ON res.race_id = r.race_id
+      FROM Combined c
+      INNER JOIN races r ON c.race_id = r.race_id
+      
       LEFT JOIN simulate_predictions pred
-        ON res.race_id = pred.race_id AND res.driver_id = pred.driver_id
+        ON c.race_id = pred.race_id AND c.driver_id = pred.driver_id
       
       LEFT JOIN PracticePrep p
-        ON res.race_id = p.race_id AND res.driver_id = p.driver_id
+        ON c.race_id = p.race_id AND c.driver_id = p.driver_id
       
       LEFT JOIN WeatherPrep w 
-        ON res.race_id = w.race_id
+        ON c.race_id = w.race_id
       
       WHERE r.year >= 2023
       ORDER BY r.year, r.round
@@ -60,9 +71,29 @@ def predict_race_outcomes():
     except Exception as e:
         print(f"❌ Database Error: {e}")
         return
+    
+    # CHECK FOR BROKEN DATA
+    sprint_data = df[df['race_type'] == 'sprint']
+
+    # Check 1: Do we have zeros?
+    zeros = sprint_data[sprint_data['grid'] == 0]
+    print(f"⚠️ Rows with Grid = 0: {len(zeros)}")
+
+    # Check 2: Look at the first few rows of "Bad" data
+    if not zeros.empty:
+        print("\nHere is what the broken data looks like:")
+        print(zeros[['year', 'circuit_name', 'driver_id', 'grid', 'finish_pos']].head(5))
+
+    # Check 3: Check for NaNs
+    nans = sprint_data['grid'].isna().sum()
+    print(f"\n⚠️ Rows with Grid = NaN: {nans}")
 
     # ==================FEATURE ENGINEERING===============
     print("Engineering Features...")
+    
+    # field_avg_pace = df['avg_fp2_lap_time'].mean()
+    # df['avg_fp2_lap_time'] = df['avg_fp2_lap_time'].fillna(field_avg_pace)
+    # df['best_fp2_lap_time'] = df['best_fp2_lap_time'].fillna(df['best_fp2_lap_time'].mean())
     
     # 1. PRACTICE LAPS
     df['best_laps'] = df['best_laps'].apply(lambda x: x if isinstance(x, list) else [])
@@ -164,18 +195,19 @@ def predict_race_outcomes():
         df[col_name] = df[col_name].fillna(10)
       
     feature_cols = [
-        'best_lap_1', 'best_lap_2', 'best_lap_3', 'best_lap_4', 
-        'constructor_prev_1', 'constructor_prev_2', 
+        'best_lap_1', 'best_lap_2',
+        'constructor_prev_1',
         'prev_finish_1', 'prev_finish_2',       
         'teammate_gap_pos',    
-        'stdev_lag_1', 'stdev_lag_2', 'stdev_lag_3',        
-        'prev_overtakes_1', 'prev_overtakes_2', 'prev_overtakes_3',       
+        'stdev_lag_1', 'stdev_lag_2',      
+        'prev_overtakes_1', 
         'grid',               
         'constructor_id',
         'track_temp',
         'air_temp',
         'driver_id' ,
-        'circuit_name'       
+        'circuit_name',
+        'race_type'       
     ]
 
     # ==================PREDICTIVE MODEL===============
@@ -183,16 +215,18 @@ def predict_race_outcomes():
     df['constructor_id'] = df['constructor_id'].astype('category')
     df['driver_id'] = df['driver_id'].astype('category')
     df['circuit_name'] = df['circuit_name'].astype('category')
+    df['race_type'] = df['race_type'].astype('category')
     
     store_predictions = []
+    sprint_rounds = df[(df['year'] == 2025) & (df['race_type'] == 'sprint')]['round'].unique()
 
-    for r in sorted(df[df['year'] == 2025]['round'].unique()):
+    for r in sorted(sprint_rounds):
         train_mask = (
             ((df['year'] < 2025) | ((df['year'] == 2025) & (df['round'] < r))) & 
             (df['finish_pos'].notna())
         )
 
-        test_mask = (df['year'] == 2025) & (df['round'] == r)
+        test_mask = (df['year'] == 2025) & (df['round'] == r) & (df['race_type'] == 'sprint')
           
         X_train = df.loc[train_mask, feature_cols]
         Y_train = df.loc[train_mask, 'finish_pos']
@@ -201,9 +235,10 @@ def predict_race_outcomes():
         model = xgb.XGBRegressor(
             tree_method='hist',        
             enable_categorical=True,  
-            n_estimators=1000,
-            learning_rate=0.01,
-            max_depth=4
+            n_estimators=500,
+            learning_rate=0.05,
+            max_depth=4,
+            monotone_constraints={'grid': 1}
         )
       
         model.fit(
@@ -286,30 +321,36 @@ def predict_race_outcomes():
             print("="*60)
             
             
-            valid_finishers = df[df['finish_pos'].notna()]
-            baseline_error = (valid_finishers['grid'] - valid_finishers['finish_pos']).abs().mean()
-            print(f"Simply using the Grid gives an error of: {baseline_error:.2f}")
+            sprint_df = df[df['race_type'] == 'sprint']
+            valid_finishers = sprint_df[sprint_df['finish_pos'].notna()]
+            
+            if not valid_finishers.empty:
+                baseline_error = (valid_finishers['grid'] - valid_finishers['finish_pos']).abs().mean()
+                print(f"📉 SIMPLY USING THE GRID (Sprint Baseline): {baseline_error:.2f}")
+            else:
+                print("📉 SIMPLY USING THE GRID: No historical sprint data found.")
+            
 
         # 2. Database Upload
-        print("\nUploading to Database...")
-        db_df = final_results[['race_id', 'driver_id', 'predicted_pos']].copy()
-        data_to_upload = db_df.to_dict(orient='records')
+    #     print("\nUploading to Database...")
+    #     db_df = final_results[['race_id', 'driver_id', 'predicted_pos']].copy()
+    #     data_to_upload = db_df.to_dict(orient='records')
         
-        try:
-            with engine.begin() as conn:  
-                query = text("""
-                    UPDATE simulate_predictions
-                    SET pred_race_pos = :predicted_pos
-                    WHERE race_id = :race_id AND driver_id = :driver_id
-                """)
-                for row in data_to_upload:
-                    conn.execute(query, row)
-            print("✅ Upload Success! Predictions stored in 'pred_race_pos'.")
-        except Exception as e:
-            print(f"❌ Upload Failed: {e}")
+    #     try:
+    #         with engine.begin() as conn:  
+    #             query = text("""
+    #                 UPDATE simulate_predictions
+    #                 SET pred_sprint_pos = :predicted_pos
+    #                 WHERE race_id = :race_id AND driver_id = :driver_id
+    #             """)
+    #             for row in data_to_upload:
+    #                 conn.execute(query, row)
+    #         print("✅ Upload Success! Predictions stored in 'pred_race_pos'.")
+    #     except Exception as e:
+    #         print(f"❌ Upload Failed: {e}")
             
-    else:
-        print("⚠️ No predictions were generated.")
+    # else:
+    #     print("⚠️ No predictions were generated.")
 
 
 def predict_race_overtakes():
@@ -746,8 +787,8 @@ def predict_race_dnfs():
         print(f"❌ Upload Failed: {e}")
     
     
-    
+
 if __name__ == "__main__":
-    predict_race_outcomes()
-    #predict_race_overtakes()
-    #predict_race_dnfs()
+    predict_sprint_outcomes()
+    # predict_race_overtakes()
+    # predict_race_dnfs()
