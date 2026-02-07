@@ -6,6 +6,7 @@ from db.ingestion.pitstops import main as ingest_pitstops
 from db.ingestion.dotd import main as ingest_dotd
 from db.ingestion.constructors import main as calc_constructors
 from db.ingestion.prices import main as ingest_prices
+from db.prediction import populate_drivers_prediction_tables
 
 def run_pipeline():
     print("🚀 Running F1 Data Pipeline...")
@@ -17,6 +18,8 @@ def run_pipeline():
     calc_constructors()
     ingest_prices()
     ingest_pitstops()
+    populate_drivers_prediction_tables()
+
 
     print("✅ Pipeline Complete.")
 

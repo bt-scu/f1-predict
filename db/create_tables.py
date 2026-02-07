@@ -245,6 +245,59 @@ def main():
                     """
                 )
             )
+            
+            # 13. DRIVER PREDICTIONS (The "Crystal Ball" Table)
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS driver_fantasy_results (
+                        prediction_id SERIAL PRIMARY KEY,
+                        race_id INTEGER NOT NULL,
+                        driver_id TEXT NOT NULL,
+
+                        -- ⏱️ QUALIFYING (GP Grid)
+                        pred_quali_pos INTEGER,         -- The "Most Likely" outcome (e.g., P4)
+                        ev_quali_pos FLOAT,
+                        prob_quali_nc FLOAT,            -- Risk of "No Time Set"
+                        ev_quali_points FLOAT,          -- Weighted Average (The "True Value")
+                        quali_factors_json JSONB,       -- SHAP-based top 5 factors
+
+                        -- 🏎️ SPRINT (Sprint Grid & Race)
+                        pred_sprint_start_pos INTEGER,
+                        pred_sprint_pos INTEGER,
+                        pred_sprint_overtakes FLOAT,
+                        prob_sprint_dnf FLOAT,
+                        ev_sprint_pos FLOAT,
+                        ev_sprint_points FLOAT,
+
+                        -- 🏁 GRAND PRIX (The Main Race)
+                        pred_race_pos INTEGER,          -- Most Likely Finish
+                        pred_race_pos_p10 INTEGER,      -- 10th percentile (optimistic)
+                        pred_race_pos_p90 INTEGER,      -- 90th percentile (pessimistic)
+                        pred_race_overtakes FLOAT,      -- Expected count
+                        prob_race_dnf FLOAT,            -- The "Portfolio Killer" risk
+                        prob_race_fastest_lap FLOAT,    -- Probability (0.0 - 1.0)
+                        prob_race_dotd FLOAT,           -- Probability (0.0 - 1.0)
+                        ev_race_pos FLOAT,
+                        ev_race_points FLOAT,           -- Weighted Average of everything above
+                        race_factors_json JSONB,        -- SHAP-based top 5 factors
+
+                        -- 🔮 RISK & EXPLAINABILITY
+                        risk_flags_json JSONB,          -- {"rain_sensitive": 0.7, "first_lap_risk": -0.3, ...}
+                        weather_source TEXT,            -- 'historical' or 'forecast'
+
+                        -- 💰 TOTALS
+                        total_projected_points FLOAT,   -- The Sum of all EVs (The Ranking Metric)
+
+                        model_version TEXT,
+                        created_at TIMESTAMP DEFAULT NOW(),
+
+                        FOREIGN KEY (race_id) REFERENCES races(race_id),
+                        UNIQUE(race_id, driver_id)
+                    )
+                    """
+                )
+            )
 
             trans.commit()
             print("--- TABLES CREATED ---")
