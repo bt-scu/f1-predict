@@ -1,5 +1,6 @@
 db_data/
 f1venv/
+ff1_cache
 
 __pycache__/
 *.pyc
@@ -20,4 +21,4 @@ docs/statistical-concepts-deepdice-.md
 
 blank.txt 
 
-Claude.md
+CLAUDE.md
