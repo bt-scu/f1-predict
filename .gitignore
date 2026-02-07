@@ -1,21 +1,23 @@
 db_data/
 f1venv/
-ff1_cache/
 
 __pycache__/
 *.pyc
 
-.claude/
-.vscode/
-.DS_Store
+f1data
 
 2023-data/
-2024-data/
+
+2024-data/ 
+
 2025-data/
-2026-data/
 
 docs/docs.md
-docs/ml-docs.md
-docs/statistical-concepts-deep-dive.md
 
-blank.txt
+docs/mldocks.md
+
+docs/statistical-concepts-deepdice-.md
+
+blank.txt 
+
+Claude.md
