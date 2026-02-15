@@ -62,20 +62,16 @@ def chunk_article(text: str, max_tokens: int = MAX_CHUNK_TOKENS, overlap: int = 
                 "text": " ".join(current_sentences),
                 "token_count": current_token_count,  # word count of this chunk
             })
-
-            # OVERLAP: grab the last N sentences and carry them into the next chunk.
-            # Example with overlap=2 and current_sentences = [A, B, C, D, E]:
-            #   current_sentences[-2:] gives [D, E]
-            #   So the NEXT chunk starts with [D, E] for context, then new sentences get appended.
-            # This prevents losing cross-sentence references like "This modification..."
-            # where "This" refers to something in the previous sentence.
+            
+            #preserve some sentences
             current_sentences = current_sentences[-overlap:] if overlap else []
+            
+            #compute token count based on the sentence overlaps
             current_token_count = sum(len(s.split()) for s in current_sentences)
 
         current_sentences.append(sentence)
         current_token_count += sentence_tokens
 
-    # Save whatever's left as the final chunk
     if current_sentences:
         chunks.append({"text": " ".join(current_sentences), "token_count": current_token_count})
 
