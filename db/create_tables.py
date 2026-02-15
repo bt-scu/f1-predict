@@ -250,19 +250,17 @@ def main():
             conn.execute(
                 text(
                     """
-                    CREATE TABLE IF NOT EXISTS driver_fantasy_results (
+                    CREATE TABLE IF NOT EXISTS driver_predictions (
                         prediction_id SERIAL PRIMARY KEY,
                         race_id INTEGER NOT NULL,
                         driver_id TEXT NOT NULL,
 
-                        -- ⏱️ QUALIFYING (GP Grid)
-                        pred_quali_pos INTEGER,         -- The "Most Likely" outcome (e.g., P4)
+                        pred_quali_pos INTEGER,
                         ev_quali_pos FLOAT,
-                        prob_quali_nc FLOAT,            -- Risk of "No Time Set"
-                        ev_quali_points FLOAT,          -- Weighted Average (The "True Value")
-                        quali_factors_json JSONB,       -- SHAP-based top 5 factors
+                        prob_quali_nc FLOAT,
+                        ev_quali_points FLOAT,
+                        quali_factors_json JSONB,
 
-                        -- 🏎️ SPRINT (Sprint Grid & Race)
                         pred_sprint_start_pos INTEGER,
                         pred_sprint_pos INTEGER,
                         pred_sprint_overtakes FLOAT,
@@ -270,30 +268,129 @@ def main():
                         ev_sprint_pos FLOAT,
                         ev_sprint_points FLOAT,
 
-                        -- 🏁 GRAND PRIX (The Main Race)
-                        pred_race_pos INTEGER,          -- Most Likely Finish
-                        pred_race_pos_p10 INTEGER,      -- 10th percentile (optimistic)
-                        pred_race_pos_p90 INTEGER,      -- 90th percentile (pessimistic)
-                        pred_race_overtakes FLOAT,      -- Expected count
-                        prob_race_dnf FLOAT,            -- The "Portfolio Killer" risk
-                        prob_race_fastest_lap FLOAT,    -- Probability (0.0 - 1.0)
-                        prob_race_dotd FLOAT,           -- Probability (0.0 - 1.0)
+                        pred_race_pos INTEGER,
+                        pred_race_pos_p10 INTEGER,
+                        pred_race_pos_p90 INTEGER,
+                        pred_race_overtakes FLOAT,
+                        prob_race_dnf FLOAT,
+                        prob_race_fastest_lap FLOAT,
+                        prob_race_dotd FLOAT,
                         ev_race_pos FLOAT,
-                        ev_race_points FLOAT,           -- Weighted Average of everything above
-                        race_factors_json JSONB,        -- SHAP-based top 5 factors
+                        ev_race_points FLOAT,
+                        race_factors_json JSONB,
 
-                        -- 🔮 RISK & EXPLAINABILITY
-                        risk_flags_json JSONB,          -- {"rain_sensitive": 0.7, "first_lap_risk": -0.3, ...}
-                        weather_source TEXT,            -- 'historical' or 'forecast'
+                        risk_flags_json JSONB,
+                        weather_source TEXT,
 
-                        -- 💰 TOTALS
-                        total_projected_points FLOAT,   -- The Sum of all EVs (The Ranking Metric)
+                        total_projected_points FLOAT,
 
                         model_version TEXT,
                         created_at TIMESTAMP DEFAULT NOW(),
 
                         FOREIGN KEY (race_id) REFERENCES races(race_id),
                         UNIQUE(race_id, driver_id)
+                    )
+                    """
+                )
+            )
+
+            # ============================================================
+            # RAG TABLES (pgvector-backed)
+            # ============================================================
+
+            # Enable pgvector (idempotent -- safe to run repeatedly)
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+            # 14. NEWS ARTICLES -- raw ingested content
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS news_articles (
+                        article_id    SERIAL PRIMARY KEY,
+                        source        TEXT NOT NULL,
+                        url           TEXT UNIQUE NOT NULL,
+                        title         TEXT,
+                        author        TEXT,
+                        content       TEXT NOT NULL,
+                        published_at  TIMESTAMP WITH TIME ZONE,
+                        ingested_at   TIMESTAMP DEFAULT NOW(),
+                        driver_codes  TEXT[],
+                        circuit_name  TEXT,
+                        content_type  TEXT DEFAULT 'article',
+                        word_count    INTEGER,
+                        content_hash  TEXT UNIQUE
+                    )
+                    """
+                )
+            )
+
+            # 15. NEWS CHUNKS -- chunked text with vector embeddings
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS news_chunks (
+                        chunk_id      SERIAL PRIMARY KEY,
+                        article_id    INTEGER REFERENCES news_articles(article_id) ON DELETE CASCADE,
+                        chunk_index   INTEGER NOT NULL,
+                        chunk_text    TEXT NOT NULL,
+                        token_count   INTEGER,
+                        embedding     vector(384),
+                        driver_codes  TEXT[],
+                        created_at    TIMESTAMP DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+
+            # HNSW index for fast approximate nearest neighbor search
+            conn.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chunks_embedding
+                        ON news_chunks USING hnsw (embedding vector_cosine_ops)
+                        WITH (m = 16, ef_construction = 200)
+                    """
+                )
+            )
+
+            # Indexes for metadata-filtered searches
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_chunks_drivers ON news_chunks USING gin (driver_codes)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_chunks_article ON news_chunks (article_id)")
+            )
+
+            # 16. INGESTION LOG -- tracks each scraping run
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS ingestion_log (
+                        log_id          SERIAL PRIMARY KEY,
+                        source          TEXT NOT NULL,
+                        run_at          TIMESTAMP DEFAULT NOW(),
+                        articles_found  INTEGER DEFAULT 0,
+                        articles_new    INTEGER DEFAULT 0,
+                        chunks_created  INTEGER DEFAULT 0,
+                        errors          JSONB,
+                        duration_sec    FLOAT
+                    )
+                    """
+                )
+            )
+
+            # 17. RETRIEVAL FEEDBACK -- logs queries for evaluation
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS retrieval_feedback (
+                        feedback_id       SERIAL PRIMARY KEY,
+                        query_text        TEXT,
+                        query_embedding   vector(384),
+                        retrieved_chunk_ids INTEGER[],
+                        llm_response      TEXT,
+                        user_rating       INTEGER CHECK (user_rating BETWEEN 1 AND 5),
+                        created_at        TIMESTAMP DEFAULT NOW()
                     )
                     """
                 )
