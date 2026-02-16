@@ -1,11 +1,9 @@
 import os
 import pandas as pd
 import json
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from db.config import engine
 from db.ingestion.helper.get_race_id_map import get_race_id_map
-
-DB_URL = "postgresql://postgres:f1-pass@localhost:6001/postgres"
-engine = create_engine(DB_URL)
 
 def ingest_dotd_2023_2024(season_directory):
     csv_files = [f for f in os.listdir(season_directory) if f.endswith('.csv')]

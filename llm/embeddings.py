@@ -14,7 +14,7 @@ USAGE:
     vecs = embedder.embed_batch(["chunk 1 text", "chunk 2 text"])  # many at once
 """
 
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer # model to transform text -> machine language
 import numpy as np
 
 MODEL_NAME = "all-MiniLM-L6-v2"

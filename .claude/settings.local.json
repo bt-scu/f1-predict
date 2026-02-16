@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls:*)",
-      "Bash(/Users/bensontran/Documents/f1predict2/f1venv/bin/pip list:*)"
-    ]
-  }
-}

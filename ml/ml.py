@@ -1,12 +1,8 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sqlalchemy import create_engine
+from db.config import engine
 from sklearn.metrics import mean_absolute_error
-
-# 1. SETUP
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
 
 print("📊 Fetching full history...")
 

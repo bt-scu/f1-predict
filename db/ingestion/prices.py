@@ -1,13 +1,10 @@
 import pandas as pd
 import os
 import sys
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from db.config import engine
 from db.ingestion.helper.get_race_id_map import get_race_id_map
 from collections import defaultdict, deque
-
-# --- CONFIGURATION ---
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
 
 # --- MAPPINGS ---
 # Maps CSV abbreviations to Database Constructor IDs

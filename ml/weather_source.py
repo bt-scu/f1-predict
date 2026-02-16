@@ -9,12 +9,10 @@ This decoupling allows training on historical data while supporting
 future predictions with forecast weather.
 """
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from db.config import engine
 from datetime import datetime
 from typing import Optional
-
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
 
 
 def get_race_weather(race_id: int, race_date: Optional[datetime] = None) -> dict:

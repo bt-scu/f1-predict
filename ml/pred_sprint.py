@@ -1,13 +1,10 @@
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from db.config import engine
 import xgboost as xgb
 import shap
 import json
-
-# 1. SETUP DATABASE
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
 
 # Weather source for future-proof predictions (Friday night runs)
 from weather_source import get_race_weather

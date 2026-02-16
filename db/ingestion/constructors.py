@@ -1,10 +1,7 @@
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from db.config import engine
 from db.ingestion.helper.extract_races import extract_races
-
-# DB Configuration
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
 
 # Point Maps
 SPRINT_PT_MAP = {1: 8, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2, 8: 1}

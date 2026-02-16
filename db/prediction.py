@@ -1,8 +1,5 @@
-from sqlalchemy import create_engine, text
-
-# 1. Setup DB Connection
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
+from sqlalchemy import text
+from db.config import engine
 
 def populate_drivers_prediction_tables():
     with engine.connect() as conn:
