@@ -1,7 +1,5 @@
-from sqlalchemy import create_engine, text
-
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
+from sqlalchemy import text
+from db.config import engine
 
 def main():
     print("--- CREATING TABLES ---")

@@ -1,11 +1,9 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from db.config import engine
 import fastf1
 import pandas as pd
 import time
 import math
-
-DB_URL = "postgresql://postgres:f1-pass@localhost:6000/postgres"
-engine = create_engine(DB_URL)
 fastf1.Cache.set_disabled()
 
 #function to return race id or create entry in DB and return race id

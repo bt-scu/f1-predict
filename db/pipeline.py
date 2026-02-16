@@ -10,8 +10,8 @@ from db.prediction import populate_drivers_prediction_tables
 
 def run_pipeline():
     print("🚀 Running F1 Data Pipeline...")
-    #create_tables()
-    #ingest_fastf1()
+    create_tables()
+    ingest_fastf1()
     calc_positions()
     calc_overtakes()
     ingest_dotd()
