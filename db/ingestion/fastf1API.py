@@ -560,48 +560,53 @@ def main():
         for i, row in schedule.iterrows():
             round_num = row['RoundNumber']
             event_name = row['EventName']
-            
+
             if round_num == 0:
                 continue
-            
-            #extract race data
-            race_session = fastf1.get_session(year, round_num, 'R')
-            
-            #store race id (check for existance or create)
-            race_id = get_or_create_race(year, round_num, race_session)
 
-            print(f"  > Processing Round {round_num}: {event_name}")
-            
-            #check f data exists if not than we can extract race lap data
-            if check_data_exists(race_id, 'laps'):
-                print("     ⏭️  Skipping Race Data (Already in DB)")
+            try:
+                #extract race data
+                race_session = fastf1.get_session(year, round_num, 'R')
 
-            else:
-                print("     > Loading Race Telemetry...")
-                race_session.load(telemetry=False, weather=True, messages=False)   
-                process_race_data(race_id, race_session)
-                reassign_fastest_lap(engine, race_id, 'race')
-            
-            #find out how many practice sessions there are for a race weekends
-            practice_sessions = []
-            if 'Practice' in str(row['Session1']): practice_sessions.append('FP1')
-            if 'Practice' in str(row['Session2']): practice_sessions.append('FP2')
-            if 'Practice' in str(row['Session3']): practice_sessions.append('FP3')
-            
-            #load practice data
-            if practice_sessions:
-                process_practice(year, round_num, race_id, practice_sessions)
+                #store race id (check for existance or create)
+                race_id = get_or_create_race(year, round_num, race_session)
 
-            #load sprint data if it exists
-            if 'Sprint' in str(row.values):
-                process_sprint_data(year, round_num, race_id)
-                reassign_fastest_lap(engine,race_id, 'sprint')
+                print(f"  > Processing Round {round_num}: {event_name}")
 
-            #load qualifying data
-            process_qualifying(year, round_num, race_id)
+                #check if data exists if not than we can extract race lap data
+                if check_data_exists(race_id, 'laps'):
+                    print("     ⏭️  Skipping Race Data (Already in DB)")
 
-            time.sleep(3)
-            print(f"     ✨ Weekend Complete: {event_name}")
+                else:
+                    print("     > Loading Race Telemetry...")
+                    race_session.load(telemetry=False, weather=True, messages=False)
+                    process_race_data(race_id, race_session)
+                    reassign_fastest_lap(engine, race_id, 'race')
+
+                #find out how many practice sessions there are for a race weekends
+                practice_sessions = []
+                if 'Practice' in str(row['Session1']): practice_sessions.append('FP1')
+                if 'Practice' in str(row['Session2']): practice_sessions.append('FP2')
+                if 'Practice' in str(row['Session3']): practice_sessions.append('FP3')
+
+                #load practice data
+                if practice_sessions:
+                    process_practice(year, round_num, race_id, practice_sessions)
+
+                #load sprint data if it exists
+                if 'Sprint' in str(row.values):
+                    process_sprint_data(year, round_num, race_id)
+                    reassign_fastest_lap(engine, race_id, 'sprint')
+
+                #load qualifying data
+                process_qualifying(year, round_num, race_id)
+
+                time.sleep(3)
+                print(f"     ✨ Weekend Complete: {event_name}")
+
+            except Exception as e:
+                print(f"     ⚠️  Skipping Round {round_num} ({event_name}): {e}")
+                continue
             
 if __name__ == '__main__':
     main()

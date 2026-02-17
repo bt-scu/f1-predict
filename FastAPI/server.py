@@ -59,8 +59,8 @@ def execute_pipeline():
         print(f"\n{'='*60}")
         print(f"🚀 Pipeline run #{pipeline_status['total_runs'] + 1} starting at {datetime.now()}")
         print(f"{'='*60}")
-        create_tables()   # ensure tables exist on the new DB
-        ingest_fastf1()   # the heavy FastF1 API work
+        create_tables() 
+        ingest_fastf1()   
         pipeline_status["total_runs"] += 1
         print(f"\n✅ Pipeline finished at {datetime.now()}")
     except Exception as e:
